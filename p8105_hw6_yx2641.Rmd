@@ -17,9 +17,6 @@ library(mgcv)
 
 Load and clean the data for regression analysis (i.e. convert numeric to factor where appropriate, check for missing data, etc.).
 ```{r}
-
-str(birthweight)
-
 birthweight = read_csv("birthweight.csv") %>% 
   mutate(babysex= factor(babysex, labels= c("female", "male")),
          frace= factor(frace, levels= c(1,2,3,4,8,9), labels= c("White", "Black", "Asian", "Puerto Rican", "Other", "Unknown")),
@@ -44,12 +41,7 @@ modelr::add_residuals(birthweight, reg_proposed) %>%
 
 ```
 
-Compare your model to two others:
-
-One using length at birth and gestational age as predictors (main effects only)
-One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
-Make this comparison in terms of the cross-validated prediction error; use crossv_mc and functions in purrr as appropriate.
-
+Comparing the proposed one with another two models. 
 
 ```{r cars}
 
@@ -64,40 +56,142 @@ cv_df =
     train = map(train, as_tibble),
     test = map(test, as_tibble))
 
-cv_df %>% pull(train) %>% .[[1]] %>% as_tibble
-
 cv_df = 
   cv_df %>% 
   mutate(
-    reg_proposed  = map(train, ~lm(bwt~ gaweeks+ malform+ momage+ ppbmi+ wtgain, data= birthweight)),
-    reg_model1     = map(train, ~lm(bwt~ blength+ gaweeks, data= .x)),
-    reg_model2  = map(train, ~lm(bwt~ bhead+ blength+ babysex+ bhead*blength+ bhead*babysex+ blength*babysex+ bhead*blength*babysex, data= .x))) %>% 
+    reg_proposed  = map(.x= train, ~lm(bwt~ gaweeks+ malform+ momage+ ppbmi+ wtgain, data= .x)),
+    reg_model1     = map(.x= train, ~lm(bwt~ blength+ gaweeks, data= .x)),
+    reg_model2  = map(.x= train, ~lm(bwt~ bhead+ blength+ babysex+ bhead*blength+ bhead*babysex+ blength*babysex+ bhead*blength*babysex, data= .x))) %>% 
   mutate(
-    reg_proposed = map2_dbl(reg_proposed, test, ~rmse(model = .x, data = .y)),
-    reg_model1    = map2_dbl(reg_model1, test, ~rmse(model = .x, data = .y)),
-    reg_model2 = map2_dbl(reg_model2, test, ~rmse(model = .x, data = .y)))
-
-
+    rmse_proposed = map2_dbl(.x= reg_proposed, .y= test, ~rmse(model = .x, data = .y)),
+    rmse_model1    = map2_dbl(.x= reg_model1, .y= test, ~rmse(model = .x, data = .y)),
+    rmse_model2 = map2_dbl(.x= reg_model2, .y= test, ~rmse(model = .x, data = .y)))
 
 ## plot
 cv_df %>% 
-  select(starts_with("babysex")) %>% 
+  select(starts_with("rmse")) %>% 
   pivot_longer(
     everything(),
     names_to = "model", 
-    values_to = "bwt",
+    values_to = "rmse",
     names_prefix = "reg_") %>% 
   mutate(model = fct_inorder(model)) %>% 
-  ggplot(aes(x = model, y = bwt)) + geom_violin()
+  ggplot(aes(x = model, y = rmse)) + geom_violin()
+
 ```
-
-
-
+Compare the models by rmse, we can see the model2 taking head circumference, length, sex, and all interactions (including the three-way interaction) between these, is the best model of the three. 
 
 ## Problem 3
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r pressure, include= FALSE }
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
 ```
+
+Part 1: plot the distribution of the estimates
+```{r}
+reg_weather= lm(tmax~ tmin, data= weather_df) %>% broom::tidy()
+
+boot_sample = function(df) {
+  sample_frac(df, replace = TRUE)
+}
+
+boot_straps = 
+  data_frame(
+    strap_number = 1:5000,
+    strap_sample = rerun(5000, boot_sample(weather_df))
+  )
+
+```
+
+data wrangling
+```{r}
+boot_reg= 
+  boot_straps %>% 
+  mutate(
+    models= map(.x= strap_sample, ~lm(tmax~tmin, data= .x)),
+    r_squared= map(models, broom::glance)
+  ) %>% 
+  select(strap_number, r_squared)%>%
+  unnest(r_squared) %>% 
+  select(strap_number, r.squared) 
+
+boot_reg_beta=  
+  boot_straps %>% 
+  mutate(
+    models= map(.x= strap_sample, ~lm(tmax~tmin, data= .x)),
+    result= map(models, broom::tidy)
+  ) %>% 
+  select(strap_number, result)
+
+boot_reg_beta= 
+  boot_reg_beta %>% 
+  unnest(result) %>% 
+  select(strap_number, term, estimate) %>% 
+  pivot_wider(
+    names_from = "term",
+    values_from = "estimate"
+    ) 
+
+boot_1= 
+  merge(boot_reg, boot_reg_beta, by= "strap_number")
+colnames(boot_1)= c("strap_number","r2","beta_0", "beta_1" )
+boot_1= 
+  boot_1 %>% 
+  mutate(beta= log(beta_0*beta_1))
+```
+
+plotings
+```{r}
+boot_1 %>% 
+  ggplot(aes(x= r2))+
+  geom_density() 
+
+boot_1%>% 
+  ggplot(aes(x= beta))+
+  geom_density() 
+```
+
+The distribution of estimated r^2 and log(beta_0*beta_1) follows a bell shape, slightly right skewed, indicating the distribution of these two estimators under simple linear regression is normal. 
+
+
+Part 2: generate the confidence interval
+
+Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r̂ 2 and log(β̂ 0∗β̂ 1
+). 
+
+```{r}
+
+mean_r2= mean(boot_1$r2)
+sd_r2= sd(boot_1$r2)
+
+mean_beta= mean(boot_1$beta)
+sd_beta= sd(boot_1$beta)
+
+r2_ci= c(mean_r2-1.96*sd_r2/5000, mean_r2+1.96*sd_r2/5000)
+beta_ci= c(mean_beta-1.96*sd_beta/5000, mean_beta+1.96*sd_beta/5000)
+
+boot_1 %>% 
+  summarise(
+     chopped_lowerbound_r2= quantile(r2,.025),
+     chopped_upperbound_r2= quantile(r2,.975)
+  )
+
+boot_1 %>% 
+  summarise(
+     chopped_lowerbound_beta= quantile(beta,.025),
+     chopped_upperbound_beta= quantile(beta,.975)
+  )
+
+```
+
+
