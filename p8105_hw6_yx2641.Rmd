@@ -9,17 +9,40 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(readr)
+library(modelr)
+library(mgcv)
 ```
 
 ## Problem 2
+
 Load and clean the data for regression analysis (i.e. convert numeric to factor where appropriate, check for missing data, etc.).
 ```{r}
-birthweight = read_csv("birthweight.csv")
+
 str(birthweight)
+
+birthweight = read_csv("birthweight.csv") %>% 
+  mutate(babysex= factor(babysex, labels= c("female", "male")),
+         frace= factor(frace, levels= c(1,2,3,4,8,9), labels= c("White", "Black", "Asian", "Puerto Rican", "Other", "Unknown")),
+         malform= factor(malform, levels= c(0,1), labels= c("absent", "present")),
+         mrace= factor(mrace, levels= c(1,2,3,4,8), labels= c("White", "Black", "Asian", "Puerto Rican", "Other"))) %>% 
+  na.omit(birthweight)
+
 ```
 
 
-Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight, on a data-driven model-building process, or a combination of the two. Describe your modeling process and show a plot of model residuals against fitted values – use add_predictions and add_residuals in making this plot.
+The model is structured as a possible prediction model of birthweight based on variables that could underly birthweight known prior to delivery. The model includes gestational age in weeks (gaweeks), presence of malformations (malform), mother's age at delivery (momage), mother’s pre-pregnancy BMI (ppbmi) and mother’s weight gain during pregnancy (wtgain). Except the factor malformations, the rest four variables are pretty significant according to the summary.
+
+```{r}
+
+reg_proposed= lm(bwt~ gaweeks+ malform+ momage+ ppbmi+ wtgain, data= birthweight)
+
+summary(reg_proposed)
+
+modelr::add_residuals(birthweight, reg_proposed) %>% 
+  ggplot(aes(x= fitted.values(reg_proposed), y=resid))+
+  geom_point()
+
+```
 
 Compare your model to two others:
 
@@ -27,14 +50,51 @@ One using length at birth and gestational age as predictors (main effects only)
 One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
 Make this comparison in terms of the cross-validated prediction error; use crossv_mc and functions in purrr as appropriate.
 
-Note that although we expect your model to be reasonable, model building itself is not a main idea of the course and we don’t necessarily expect your model to be “optimal”.
-
 
 ```{r cars}
-summary(cars)
+
+reg_model1= lm(bwt~ blength+ gaweeks, data= birthweight)
+
+reg_model2= lm(bwt~ bhead+ blength+ babysex+ bhead*blength+ bhead*babysex+ blength*babysex+ bhead*blength*babysex, data= birthweight)
+
+
+cv_df =
+  crossv_mc(birthweight, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+
+cv_df %>% pull(train) %>% .[[1]] %>% as_tibble
+
+cv_df = 
+  cv_df %>% 
+  mutate(
+    reg_proposed  = map(train, ~lm(bwt~ gaweeks+ malform+ momage+ ppbmi+ wtgain, data= birthweight)),
+    reg_model1     = map(train, ~lm(bwt~ blength+ gaweeks, data= .x)),
+    reg_model2  = map(train, ~lm(bwt~ bhead+ blength+ babysex+ bhead*blength+ bhead*babysex+ blength*babysex+ bhead*blength*babysex, data= .x))) %>% 
+  mutate(
+    reg_proposed = map2_dbl(reg_proposed, test, ~rmse(model = .x, data = .y)),
+    reg_model1    = map2_dbl(reg_model1, test, ~rmse(model = .x, data = .y)),
+    reg_model2 = map2_dbl(reg_model2, test, ~rmse(model = .x, data = .y)))
+
+
+
+## plot
+cv_df %>% 
+  select(starts_with("babysex")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "bwt",
+    names_prefix = "reg_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = bwt)) + geom_violin()
 ```
 
-## Including Plots
+
+
+
+## Problem 3
 
 You can also embed plots, for example:
 
